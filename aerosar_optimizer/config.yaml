@@ -1,0 +1,49 @@
+# ==============================================================================
+# AeroSAR-Optimizer Configuration Specification
+# Autonomous UAV Search-and-Rescue Route Optimization Pipeline
+# ==============================================================================
+
+mission:
+  name: "AeroSAR-AlpineTriage-Alpha"
+  description: "High-altitude mountainous search-and-rescue survivor route optimization"
+  base_datum:
+    lat: 46.558000 # Latitude of Base Camp / Launch Site (WGS84, degrees)
+    lon: 8.560000  # Longitude of Base Camp / Launch Site (WGS84, degrees)
+    alt_m: 1450.0  # Launch site altitude MSL (meters)
+  search_area_radius_m: 2500.0 # Bounding operational radius (meters)
+  survey_altitude_agl_m: 50.0  # Survey altitude Above Ground Level (meters)
+  hover_loiter_time_s: 5.0    # Loiter duration at each survivor beacon for thermal scan (seconds)
+  acceptance_radius_m: 3.0    # Waypoint navigation acceptance radius (meters)
+
+drone:
+  model: "HexaRotor-SAR-Heavy"
+  mass_kg: 5.2                # All-up mass with payload (kg)
+  nominal_airspeed_mps: 15.0  # Commanded true airspeed V_air (m/s)
+  max_airspeed_mps: 24.0      # Maximum aerodynamic airspeed ceiling (m/s)
+  hover_power_watts: 310.0    # Mechanical + electrical hover power (Watts)
+  drag_coefficient: 0.048     # Lumped parasitic aerodynamic drag coefficient (W / (m/s)^3)
+                              # Flight Power model: P_flight = P_hover + c_drag * ||V_air||^3
+
+battery:
+  chemistry: "LiPo-6S"
+  capacity_wh: 350.0          # Total onboard battery nominal capacity (Watt-hours)
+  nominal_voltage_v: 22.2     # 6S pack nominal voltage (Volts)
+  reserve_margin_ratio: 0.20  # Reserve margin (20% mandatory reserve for safe RTL and contingencies)
+  max_discharge_c: 15.0       # Maximum continuous discharge C-rating
+
+wind:
+  speed_mps: 6.8              # Ambient wind speed magnitude (m/s)
+  direction_deg: 55.0         # Meteorological wind direction: angle towards which wind is blowing (deg from East)
+  gust_factor: 1.15           # Peak gust multiplier for stochastic simulations
+
+optimization:
+  default_target_count: 10    # Default number of survivor beacons
+  benchmark_target_counts: [4, 6, 8, 10, 12, 14] # Benchmarking evaluation grid
+  random_seed: 42             # Default reproducible seed for synthetic generator
+  brute_force_cutoff_n: 10    # Maximum N to execute brute force before O(n!) prohibitive delay
+
+output:
+  directory: "output"
+  trajectory_plot: "mission_trajectory.png"
+  telemetry_waypoints: "mission_plan.waypoints"
+  benchmark_csv: "benchmark_results.csv"
