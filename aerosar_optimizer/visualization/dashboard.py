@@ -1,11 +1,12 @@
 """
-visualization/dashboard.py - Interactive Streamlit Ground Control Station Dashboard.
+visualization/dashboard.py - Interactive Streamlit Ground Control Station Dashboard & Real-Time Race Simulator.
 
 Production-grade real-time autonomous UAV search-and-rescue mission planner:
-1. Dynamic parameter tuning (survivors, wind vectors, battery capacity, reserve margin).
-2. Cyber-physical kinematics and asymmetric cost matrix telemetry.
-3. Held-Karp Bitmask DP vs. Greedy Trajectory visualization with aerodynamic quivers.
-4. Battery depletion gauges, triage contingency advisory, and algorithmic scaling curves.
+1. Dynamic parameter tuning (survivor beacons count n, wind vectors, drone aerodynamics, battery limits).
+2. Live 60 FPS Tactical Radar HUD: Real-time dual-drone flight race comparing Proposed Held-Karp
+   Bitmask DP vs. Traditional Baselines (Greedy NN, Euclidean Wind-Blind, Brute Force).
+3. Real-time battery depletion, ground speed kinematics, wind drift crab angles, and RTL landing flare.
+4. Interactive Plotly telemetry curves: Battery SoC (%) vs Flight Time and Energy vs Distance.
 5. Exportable QGroundControl / MAVLink .waypoints mission file generation.
 """
 
@@ -23,21 +24,48 @@ if str(project_root) not in sys.path:
 import io
 import math
 import streamlit as st
+import streamlit.components.v1 as components
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import pandas as pd
 
 from core.physics import DronePhysicsModel, WindField, Waypoint
 from core.cost_matrix import CostMatrixCalculator
 from core.bitmask_dp import BitmaskDPSolver, OptimizationResult
-from core.brute_force import GreedyNearestNeighborSolver, BruteForceSolver
+import importlib
+try:
+    import core.brute_force
+    importlib.reload(core.brute_force)
+    from core.brute_force import (
+        GreedyNearestNeighborSolver,
+        BruteForceSolver,
+        EuclideanNearestNeighborSolver,
+    )
+except (ImportError, AttributeError):
+    import core.brute_force
+    from core.brute_force import GreedyNearestNeighborSolver, BruteForceSolver
+    if hasattr(core.brute_force, "EuclideanNearestNeighborSolver"):
+        EuclideanNearestNeighborSolver = core.brute_force.EuclideanNearestNeighborSolver
+    else:
+        # Fallback alias to Greedy solver if cache cannot be purged
+        EuclideanNearestNeighborSolver = GreedyNearestNeighborSolver
+
 from core.telemetry import MAVLinkMissionGenerator
 from simulation.synthetic_data import SyntheticScenarioGenerator
+import simulation.live_simulation
+importlib.reload(simulation.live_simulation)
+from simulation.live_simulation import DualDroneRaceEngine
+
+import visualization.live_radar_component
+importlib.reload(visualization.live_radar_component)
 from visualization.plotter import MissionPlotter
+from visualization.live_radar_component import render_live_radar_html
 
 
 # Page configuration
 st.set_page_config(
-    page_title="AeroSAR-Optimizer | Autonomous UAV Route Planner",
+    page_title="AeroSAR-Optimizer | Autonomous UAV Route Planner & Real-Time Simulator",
     page_icon="🚁",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -131,6 +159,19 @@ st.markdown(
         color: #94A3B8;
         margin-bottom: 24px;
     }
+
+    .race-banner {
+        background: linear-gradient(90deg, rgba(6, 182, 212, 0.12) 0%, rgba(249, 115, 22, 0.12) 100%);
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        border-radius: 12px;
+        padding: 14px 20px;
+        margin-bottom: 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -143,7 +184,7 @@ def main() -> None:
     st.markdown(
         '<div class="hud-subtitle">'
         'Cyber-Physical UAV Search-and-Rescue Route Optimization Engine | '
-        'Asymmetric Bitmask Dynamic Programming & Kinematic Wind Drift Simulation'
+        'Asymmetric Bitmask Dynamic Programming & Real-Time Flight Simulation'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -160,7 +201,7 @@ def main() -> None:
         )
 
         num_survivors = st.slider(
-            "Survivor Beacon Count (n)",
+            "Survivor Rescue Nodes (n)",
             min_value=4,
             max_value=15,
             value=10,
@@ -168,12 +209,27 @@ def main() -> None:
             help="Number of survivor targets to triage and survey (excluding Base Depot)",
         )
 
+        baseline_algo_options = [
+            "Greedy Nearest-Neighbor (Energy)",
+            "Traditional Distance-First (Wind-Blind)",
+        ]
+        if num_survivors <= 8:
+            baseline_algo_options.append("Brute-Force Permutations O(n!)")
+
+        baseline_algo_choice = st.selectbox(
+            "Traditional Algorithm Baseline",
+            options=baseline_algo_options,
+            index=0,
+            help="Traditional benchmark algorithm to pit against Proposed Bitmask DP in real-time simulation",
+        )
+
         random_seed = st.number_input(
-            "Synthetic Generator Seed",
+            "Synthetic Cluster Seed",
             min_value=1,
             max_value=9999,
             value=42,
             step=1,
+            help="Change to generate different survivor spatial distributions",
         )
 
         st.markdown("---")
@@ -185,7 +241,7 @@ def main() -> None:
             max_value=16.0,
             value=6.8,
             step=0.2,
-            help="Horizontal atmospheric wind magnitude",
+            help="Horizontal atmospheric wind magnitude (critical for aerodynamic drift)",
         )
 
         wind_direction = st.slider(
@@ -203,7 +259,7 @@ def main() -> None:
         airspeed = st.slider(
             "Nominal True Airspeed V_air (m/s)",
             min_value=10.0,
-            max_value=22.0,
+            max_value=24.0,
             value=15.0,
             step=0.5,
         )
@@ -224,6 +280,15 @@ def main() -> None:
             step=1,
             help="Mandatory buffer reserved for landing and unexpected gusts",
         ) / 100.0
+
+        loiter_time = st.slider(
+            "Sensor Scan Time per Target (s)",
+            min_value=0.0,
+            max_value=20.0,
+            value=5.0,
+            step=1.0,
+            help="Hover duration at each survivor beacon for thermal/optical imaging",
+        )
 
         st.markdown("---")
         st.caption("AeroSAR-Optimizer v2.4.0-Production | DAA Systems")
@@ -250,17 +315,38 @@ def main() -> None:
     )
 
     waypoints = scenario.waypoints
+    for wp in waypoints[1:]:
+        wp.loiter_time_s = loiter_time
 
     # Compute Directed Asymmetric Cost Matrix
     calculator = CostMatrixCalculator(drone, wind)
     cost_res = calculator.compute(waypoints)
 
-    # Execute Solvers
+    # Execute Proposed Bitmask DP Solver
     dp_solver = BitmaskDPSolver(drone)
     dp_result = dp_solver.solve(cost_res, waypoints, enforce_feasibility=False)
 
-    greedy_solver = GreedyNearestNeighborSolver(drone)
-    greedy_result = greedy_solver.solve(cost_res, waypoints)
+    # Execute Traditional Baseline Solver
+    if "Distance-First" in baseline_algo_choice:
+        baseline_solver = EuclideanNearestNeighborSolver(drone)
+        trad_result = baseline_solver.solve(cost_res, waypoints)
+    elif "Brute-Force" in baseline_algo_choice and num_survivors <= 8:
+        baseline_solver = BruteForceSolver(drone)
+        trad_result = baseline_solver.solve(cost_res, waypoints)
+    else:
+        baseline_solver = GreedyNearestNeighborSolver(drone)
+        trad_result = baseline_solver.solve(cost_res, waypoints)
+
+    # Build Live Race Simulation Engine
+    race_engine = DualDroneRaceEngine(
+        drone_model=drone,
+        wind_field=wind,
+        waypoints=waypoints,
+        dp_result=dp_result,
+        traditional_result=trad_result,
+    )
+    frames = race_engine.generate_timeline_frames(num_frames=150)
+    sim_summary = race_engine.get_summary_comparison()
 
     # Top KPI Metrics Row
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -295,14 +381,18 @@ def main() -> None:
         )
 
     with col3:
-        savings_wh = max(0.0, greedy_result.total_energy_wh - dp_result.total_energy_wh)
-        savings_pct = (savings_wh / greedy_result.total_energy_wh) * 100.0 if greedy_result.total_energy_wh > 0 else 0.0
+        savings_wh = max(0.0, trad_result.total_energy_wh - dp_result.total_energy_wh)
+        savings_pct = (
+            (savings_wh / trad_result.total_energy_wh) * 100.0
+            if trad_result.total_energy_wh > 0
+            else 0.0
+        )
         st.markdown(
             f"""
             <div class="kpi-card">
-                <div class="kpi-title">DP vs Greedy Delta</div>
+                <div class="kpi-title">DP vs Baseline Delta</div>
                 <div class="kpi-value" style="color:#10B981;">-{savings_pct:.1f}%</div>
-                <div class="kpi-sub">{savings_wh:.1f} Wh saved over Greedy</div>
+                <div class="kpi-sub">{savings_wh:.1f} Wh saved over {trad_result.algorithm_name.split()[0]}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -315,7 +405,7 @@ def main() -> None:
             <div class="kpi-card">
                 <div class="kpi-title">Flight Sortie Time</div>
                 <div class="kpi-value">{flight_min:.1f} <span style="font-size:1rem;color:#94A3B8;">min</span></div>
-                <div class="kpi-sub">{dp_result.total_flight_time_s:.0f} seconds duration</div>
+                <div class="kpi-sub">{dp_result.total_flight_time_s:.0f}s total mission</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -327,7 +417,7 @@ def main() -> None:
             <div class="kpi-card">
                 <div class="kpi-title">Asymmetry Index α</div>
                 <div class="kpi-value" style="color:#38BDF8;">{cost_res.asymmetry_index:.3f}</div>
-                <div class="kpi-sub">Max Leg Skew: {cost_res.max_asymmetry_ratio * 100.0:.0f}%</div>
+                <div class="kpi-sub">Peak Skew: {cost_res.max_asymmetry_ratio * 100.0:.0f}%</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -349,22 +439,200 @@ def main() -> None:
         )
 
     # Main Navigation Tabs
-    tab1, tab2, tab3 = st.tabs([
-        "📍 Tactical Trajectory & Telemetry",
-        "📊 Algorithmic Benchmarks & Scaling",
+    tab_sim, tab_traj, tab_bench, tab_mavlink = st.tabs([
+        "⚡ Real-Time Flight Simulation & Algorithmic Duel",
+        "📍 Tactical Trajectory & Static Telemetry",
+        "📊 Algorithmic Benchmarks & Complexity Scaling",
         "📡 MAVLink Mission Telemetry Export",
     ])
 
-    # TAB 1: Trajectory & Leg Breakdown
-    with tab1:
+    # =========================================================================
+    # TAB 1: LIVE REAL-TIME DUAL-DRONE FLIGHT SIMULATION
+    # =========================================================================
+    with tab_sim:
+        st.markdown(
+            f"""
+            <div class="race-banner">
+                <div>
+                    <strong style="color:#38BDF8; font-size:1.1rem;">🚁 Real-Time UAV Sortie Duel:</strong>
+                    <span style="color:#E2E8F0;"> Proposed <strong>Held-Karp Bitmask DP</strong> (Cyan) vs. <strong>{trad_result.algorithm_name}</strong> (Amber)</span>
+                </div>
+                <div>
+                    <span style="font-family:'JetBrains Mono',monospace; color:#10B981; font-weight:700;">
+                        Net Energy Savings: {sim_summary['energy_savings_wh']} Wh ({sim_summary['energy_savings_pct']}%)
+                    </span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # 60 FPS HTML5 Canvas Tactical Radar HUD Component
+        radar_html = render_live_radar_html(
+            waypoints=waypoints,
+            wind_field=wind,
+            drone_model=drone,
+            frames=frames,
+            summary=sim_summary,
+        )
+        components.html(radar_html, height=660, scrolling=False)
+
+        st.markdown("---")
+
+        # Real-Time Telemetry Comparison Curves (Plotly)
+        st.subheader("📈 Real-Time Kinematics & Energy Depletion Telemetry")
+
+        chart_col1, chart_col2 = st.columns(2)
+
+        # Build timeline series for Plotly
+        t_series = [f["t"] for f in frames]
+        dp_soc_series = [f["dp"]["soc_percent"] for f in frames]
+        trad_soc_series = [f["trad"]["soc_percent"] for f in frames]
+        dp_e_series = [f["dp"]["energy_consumed_wh"] for f in frames]
+        trad_e_series = [f["trad"]["energy_consumed_wh"] for f in frames]
+        reserve_line = [drone.reserve_margin_ratio * 100.0] * len(frames)
+
+        with chart_col1:
+            fig_soc = go.Figure()
+            fig_soc.add_trace(go.Scatter(
+                x=t_series,
+                y=dp_soc_series,
+                mode="lines",
+                name="AeroSAR Bitmask DP",
+                line=dict(color="#06B6D4", width=3),
+            ))
+            fig_soc.add_trace(go.Scatter(
+                x=t_series,
+                y=trad_soc_series,
+                mode="lines",
+                name=trad_result.algorithm_name,
+                line=dict(color="#F97316", width=2.5, dash="dash"),
+            ))
+            fig_soc.add_trace(go.Scatter(
+                x=t_series,
+                y=reserve_line,
+                mode="lines",
+                name="Safety Reserve Limit (20%)",
+                line=dict(color="#EF4444", width=1.5, dash="dot"),
+            ))
+            fig_soc.update_layout(
+                title="Battery State-of-Charge (SoC %) vs Elapsed Flight Time",
+                xaxis_title="Mission Flight Elapsed Time (seconds)",
+                yaxis_title="Remaining Battery SoC (%)",
+                template="plotly_dark",
+                paper_bgcolor="#0B1120",
+                plot_bgcolor="#0B1120",
+                margin=dict(l=40, r=20, t=50, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_soc, use_container_width=True)
+
+        with chart_col2:
+            fig_e = go.Figure()
+            fig_e.add_trace(go.Scatter(
+                x=t_series,
+                y=dp_e_series,
+                mode="lines",
+                name="AeroSAR DP Energy",
+                line=dict(color="#10B981", width=3),
+            ))
+            fig_e.add_trace(go.Scatter(
+                x=t_series,
+                y=trad_e_series,
+                mode="lines",
+                name=f"{trad_result.algorithm_name} Energy",
+                line=dict(color="#F59E0B", width=2.5, dash="dash"),
+            ))
+            fig_e.update_layout(
+                title="Cumulative Energy Consumed (Wh) vs Sortie Duration",
+                xaxis_title="Mission Flight Elapsed Time (seconds)",
+                yaxis_title="Cumulative Energy Consumed (Wh)",
+                template="plotly_dark",
+                paper_bgcolor="#0B1120",
+                plot_bgcolor="#0B1120",
+                margin=dict(l=40, r=20, t=50, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_e, use_container_width=True)
+
+        # Comparative Sortie Debriefing Scorecard
+        st.subheader("🏁 Head-to-Head Mission Debriefing Scorecard")
+        deb_col1, deb_col2, deb_col3, deb_col4 = st.columns(4)
+
+        with deb_col1:
+            st.markdown(
+                f"""
+                <div class="kpi-card">
+                    <div class="kpi-title">Total Energy Draw</div>
+                    <div class="kpi-value" style="font-size:1.45rem;">
+                        <span style="color:#06B6D4;">{sim_summary['dp_energy_wh']} Wh</span> vs <span style="color:#F97316;">{sim_summary['trad_energy_wh']} Wh</span>
+                    </div>
+                    <div class="kpi-sub" style="color:#10B981;">Saved {sim_summary['energy_savings_wh']} Wh ({sim_summary['energy_savings_pct']}%)</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with deb_col2:
+            st.markdown(
+                f"""
+                <div class="kpi-card">
+                    <div class="kpi-title">Sortie Duration</div>
+                    <div class="kpi-value" style="font-size:1.45rem;">
+                        <span style="color:#06B6D4;">{sim_summary['dp_time_min']} min</span> vs <span style="color:#F97316;">{sim_summary['trad_time_min']} min</span>
+                    </div>
+                    <div class="kpi-sub">Delta: {abs(sim_summary['time_diff_s']):.1f}s</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with deb_col3:
+            st.markdown(
+                f"""
+                <div class="kpi-card">
+                    <div class="kpi-title">Touchdown Battery SoC</div>
+                    <div class="kpi-value" style="font-size:1.45rem;">
+                        <span style="color:#06B6D4;">{sim_summary['dp_soc']}%</span> vs <span style="color:#F97316;">{sim_summary['trad_soc']}%</span>
+                    </div>
+                    <div class="kpi-sub">Threshold: {sim_summary['reserve_threshold_pct']}%</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with deb_col4:
+            dp_pass = "✓ PASS (SAFE)" if sim_summary["dp_feasible"] else "⚠ DEFICIT"
+            trad_pass = "✓ PASS (SAFE)" if sim_summary["trad_feasible"] else "⚠ INFEASIBLE"
+            st.markdown(
+                f"""
+                <div class="kpi-card">
+                    <div class="kpi-title">Reserve Compliance</div>
+                    <div class="kpi-value" style="font-size:1.25rem;">
+                        <span style="color:#06B6D4;">{dp_pass}</span> / <span style="color:#F97316;">{trad_pass}</span>
+                    </div>
+                    <div class="kpi-sub">Base Camp Return Verified</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Detailed Order Comparison
+        st.markdown(f"**Optimal Bitmask DP Traversal Order:** `{sim_summary['dp_path']}`")
+        st.markdown(f"**Traditional Baseline Traversal Order:** `{sim_summary['trad_path']}`")
+
+    # =========================================================================
+    # TAB 2: STATIC TACTICAL TRAJECTORY & TELEMETRY
+    # =========================================================================
+    with tab_traj:
         st.subheader("Tactical Flight Trajectory Map")
         plotter = MissionPlotter(dark_mode=True)
         fig = plotter.plot_trajectories(
             waypoints=waypoints,
             dp_result=dp_result,
-            greedy_result=greedy_result,
+            greedy_result=trad_result,
             wind_field=wind,
-            title=f"AeroSAR: Optimal Held-Karp Tour vs Greedy (Wind: {wind.speed_mps} m/s @ {wind.direction_deg}°)",
+            title=f"AeroSAR: Optimal Held-Karp Tour vs {trad_result.algorithm_name} (Wind: {wind.speed_mps} m/s @ {wind.direction_deg}°)",
             figsize=(12, 8),
         )
         st.pyplot(fig, use_container_width=True)
@@ -382,7 +650,6 @@ def main() -> None:
 
         st.subheader("Step-by-Step Leg Kinematics Telemetry")
         if dp_result.leg_details:
-            import pandas as pd
             df_legs = pd.DataFrame(dp_result.leg_details)
             df_display = df_legs[[
                 "leg_index",
@@ -418,8 +685,10 @@ def main() -> None:
                 use_container_width=True,
             )
 
-    # TAB 2: Complexity & Benchmarks
-    with tab2:
+    # =========================================================================
+    # TAB 3: COMPLEXITY & BENCHMARKS
+    # =========================================================================
+    with tab_bench:
         st.subheader("Algorithmic Complexity & Scalability Evaluation")
         st.markdown(
             """
@@ -429,7 +698,7 @@ def main() -> None:
         )
 
         n_range = [4, 6, 8, 10, 12, 14]
-        bf_theoretical = [math.factorial(n) * 2.5e-7 for n in n_range]  # estimated seconds
+        bf_theoretical = [math.factorial(n) * 2.5e-7 for n in n_range]
         dp_theoretical = [(n**2 * (2**n)) * 3e-8 for n in n_range]
 
         col_b1, col_b2 = st.columns(2)
@@ -463,8 +732,10 @@ def main() -> None:
                 spine.set_color("#374151")
             st.pyplot(fig_mem, use_container_width=True)
 
-    # TAB 3: Telemetry Export
-    with tab3:
+    # =========================================================================
+    # TAB 4: MAVLINK MISSION TELEMETRY EXPORT
+    # =========================================================================
+    with tab_mavlink:
         st.subheader("MAVLink / QGroundControl Waypoint Mission Generator")
         st.markdown(
             "Exports the computed trajectory into an industry-standard **QGroundControl WPL 110 (.waypoints)** file. "
@@ -473,7 +744,7 @@ def main() -> None:
 
         telemetry_gen = MAVLinkMissionGenerator(
             survey_alt_agl_m=50.0,
-            loiter_time_s=5.0,
+            loiter_time_s=loiter_time,
             acceptance_radius_m=3.0,
         )
 

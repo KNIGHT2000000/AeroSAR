@@ -20,7 +20,7 @@ python -m pytest aerosar_optimizer/tests/test_aerosar.py -v
 
 To launch the interactive Streamlit GCS Dashboard:
 ```bash
-streamlit run aerosar_optimizer/visualization/dashboard.py
+python -m streamlit run aerosar_optimizer/visualization/dashboard.py
 ```
 
 See the full documentation and mathematical proofs in [aerosar_optimizer/README.md](file:///d:/DAA_Project/aerosar_optimizer/README.md).

@@ -132,6 +132,36 @@ If the minimum-energy tour requires $E_{\text{tour}} > E_{\text{usable}}$, the m
 2. The solver prunes lowest priority targets iteratively and re-solves DP until a valid closed tour fits within the usable battery envelope.
 3. Both nominal requirements, deficit metrics, and recommended triage sorties are logged for the operator.
 
+### 3.3 Theoretical Complexity & Problem Classification
+
+To fulfill rigorous Design and Analysis of Algorithms (DAA) criteria, the computational complexity is formally classified:
+
+#### A. Decision Problem Formulation ($\text{SAR-DECISION}$)
+> **Instance**: A set of $N$ waypoints $V = \{0, 1, \dots, N-1\}$, a directed asymmetric cost matrix $C[u][v] \in \mathbb{R}^+$, and an energy budget threshold $B = E_{\text{usable}}$.
+> **Question**: Does there exist a cyclic permutation (closed tour) $\pi$ of $V$ starting and ending at Base Depot 0 such that:
+> $$\sum_{i=0}^{N-1} C[\pi(i)][\pi(i+1)] \le B \quad \text{where } \pi(N) = \pi(0) = 0?$$
+
+#### B. Membership in NP
+Given a proposed flight certificate (a permutation sequence $\pi$), a deterministic verifier:
+1. Checks that $\pi$ contains every waypoint in $V$ exactly once in $O(N)$ time.
+2. Sums the directed leg energy costs along $\pi$ and checks if $\sum C \le B$ in $O(N)$ time.
+Since verification completes in deterministic polynomial time ($O(N)$), $\text{SAR-DECISION} \in \mathbf{NP}$.
+
+#### C. NP-Completeness Proof (Reduction from Directed Hamiltonian Cycle)
+We establish a polynomial-time reduction from the known NP-Complete **Directed Hamiltonian Cycle (DHC)** problem ($\text{DHC} \le_p \text{SAR-DECISION}$):
+1. Given a directed graph $G = (V_G, E_G)$ with $|V_G| = N$, construct an asymmetric cost matrix $C$:
+   $$C[u][v] = \begin{cases} 1 & \text{if } (u, v) \in E_G \\ \infty & \text{if } (u, v) \notin E_G \end{cases}$$
+2. Set budget $B = N$.
+3. Clearly, $G$ contains a Directed Hamiltonian Cycle if and only if $\text{SAR-DECISION}$ returns **YES** with total cost $\le N$.
+4. The reduction runs in $O(N^2)$ polynomial time.
+Therefore, the decision version of the energy-aware routing problem is **NP-Complete**.
+
+#### D. NP-Hardness of the Optimization Problem ($\text{SAR-OPTIMIZE}$)
+Because any polynomial-time algorithm that solves the optimization version ($\min E_{\text{tour}}$) could solve $\text{SAR-DECISION}$ by simply checking if $\min E_{\text{tour}} \le B$, the search-and-rescue tour optimization problem is strictly **NP-Hard**.
+
+#### E. Reduction Chain from Boolean Satisfiability (SAT)
+$$\text{3-SAT} \;\le_p\; \text{Directed Hamiltonian Cycle} \;\le_p\; \text{Directed ATSP Decision} \;\le_p\; \text{AeroSAR-Optimizer}$$
+
 ---
 
 ## 4. Project Directory Tree

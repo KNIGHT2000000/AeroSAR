@@ -5,5 +5,7 @@ and an interactive Streamlit Ground Control Station dashboard for real-time miss
 """
 
 from .plotter import MissionPlotter
+from .live_radar_component import render_live_radar_html
 
-__all__ = ["MissionPlotter"]
+__all__ = ["MissionPlotter", "render_live_radar_html"]
+

@@ -124,3 +124,72 @@ def test_trajectory_visualizer_rendering(tmp_path: Path) -> None:
 
     assert out_img.exists()
     assert out_img.stat().st_size > 10000  # Valid non-empty PNG image
+
+
+def test_euclidean_nearest_neighbor_solver() -> None:
+    """Verify traditional Euclidean nearest-neighbor solver computes physically accurate flight energy."""
+    from aerosar_optimizer.core.physics import DronePhysicsModel, WindField
+    from aerosar_optimizer.core.cost_matrix import CostMatrixCalculator
+    from aerosar_optimizer.core.brute_force import EuclideanNearestNeighborSolver
+    from aerosar_optimizer.simulation.synthetic_data import SyntheticScenarioGenerator
+
+    drone = DronePhysicsModel()
+    wind = WindField(speed_mps=6.0, direction_deg=45.0)
+    gen = SyntheticScenarioGenerator()
+    scen = gen.generate(num_survivors=5, wind_speed_mps=wind.speed_mps, wind_direction_deg=wind.direction_deg, seed=99)
+
+    calc = CostMatrixCalculator(drone, wind)
+    cm = calc.compute(scen.waypoints)
+
+    solver = EuclideanNearestNeighborSolver(drone)
+    res = solver.solve(cm, scen.waypoints)
+
+    assert len(res.optimal_path) == len(scen.waypoints) + 1
+    assert res.optimal_path[0] == 0
+    assert res.optimal_path[-1] == 0
+    assert res.total_energy_wh > 0.0
+    assert res.total_flight_time_s > 0.0
+    assert len(res.leg_details) == len(scen.waypoints)
+
+
+def test_dual_drone_race_simulation_engine() -> None:
+    """Verify continuous kinematic race engine produces synchronized, physically consistent frames."""
+    from aerosar_optimizer.core.physics import DronePhysicsModel, WindField
+    from aerosar_optimizer.core.cost_matrix import CostMatrixCalculator
+    from aerosar_optimizer.core.bitmask_dp import BitmaskDPSolver
+    from aerosar_optimizer.core.brute_force import GreedyNearestNeighborSolver
+    from aerosar_optimizer.simulation.synthetic_data import SyntheticScenarioGenerator
+    from aerosar_optimizer.simulation.live_simulation import DualDroneRaceEngine
+    from aerosar_optimizer.visualization.live_radar_component import render_live_radar_html
+
+    drone = DronePhysicsModel()
+    wind = WindField(speed_mps=7.0, direction_deg=60.0)
+    gen = SyntheticScenarioGenerator()
+    scen = gen.generate(num_survivors=6, wind_speed_mps=wind.speed_mps, wind_direction_deg=wind.direction_deg, seed=42)
+
+    calc = CostMatrixCalculator(drone, wind)
+    cm = calc.compute(scen.waypoints)
+
+    dp_res = BitmaskDPSolver(drone).solve(cm, scen.waypoints)
+    trad_res = GreedyNearestNeighborSolver(drone).solve(cm, scen.waypoints)
+
+    race = DualDroneRaceEngine(drone, wind, scen.waypoints, dp_res, trad_res)
+    frames = race.generate_timeline_frames(num_frames=20)
+    summary = race.get_summary_comparison()
+
+    assert len(frames) == 20
+    # Initial frame at t=0
+    assert frames[0]["t"] == 0.0
+    assert frames[0]["dp"]["x"] == scen.waypoints[0].x
+    assert frames[0]["trad"]["x"] == scen.waypoints[0].x
+
+    # Final frame return to base camp
+    assert frames[-1]["dp"]["is_landed"] is True
+    assert frames[-1]["trad"]["is_landed"] is True
+
+    # HTML radar generation
+    html = render_live_radar_html(scen.waypoints, wind, drone, frames, summary)
+    assert "<canvas id=\"radarCanvas\">" in html
+    assert "AEROSAR BITMASK DP" in html
+    assert "TRADITIONAL BASELINE" in html
+

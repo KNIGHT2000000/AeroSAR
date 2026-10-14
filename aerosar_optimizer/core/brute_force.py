@@ -283,3 +283,108 @@ class GreedyNearestNeighborSolver:
             num_evaluations=eval_count,
             leg_details=legs,
         )
+
+
+class EuclideanNearestNeighborSolver:
+    """Traditional Euclidean Distance Nearest-Neighbor heuristic solver.
+
+    Greedily transitions to the closest unvisited node by Euclidean distance (ignoring wind drift),
+    then returns to Base Depot. This simulates traditional route planners that lack aerodynamic awareness.
+    """
+
+    def __init__(self, drone_model: DronePhysicsModel) -> None:
+        self.drone_model = drone_model
+
+    def solve(
+        self,
+        cost_matrix_result: CostMatrixResult,
+        waypoints: List[Waypoint],
+    ) -> OptimizationResult:
+        """Execute Euclidean distance-first greedy route generation."""
+        c_matrix = cost_matrix_result.energy_matrix
+        t_matrix = cost_matrix_result.time_matrix
+        vg_matrix = cost_matrix_result.ground_speed_matrix
+        dist_matrix = cost_matrix_result.distance_matrix
+
+        n = len(waypoints)
+        start_time = time.perf_counter()
+
+        visited = [False] * n
+        path = [0]
+        visited[0] = True
+        curr = 0
+        total_energy = 0.0
+        eval_count = 0
+
+        for _ in range(n - 1):
+            best_next = -1
+            best_dist = float("inf")
+
+            for nxt in range(1, n):
+                eval_count += 1
+                if not visited[nxt]:
+                    d = dist_matrix[curr, nxt]
+                    if d < best_dist:
+                        best_dist = d
+                        best_next = nxt
+
+            if best_next == -1:
+                break
+
+            visited[best_next] = True
+            path.append(best_next)
+            curr = best_next
+
+        # Return to depot
+        path.append(0)
+        exec_time = time.perf_counter() - start_time
+
+        # Calculate actual physical telemetry details under wind
+        legs = []
+        cum_energy = 0.0
+        cum_time = 0.0
+
+        for idx in range(len(path) - 1):
+            u = path[idx]
+            v = path[idx + 1]
+
+            leg_e = float(c_matrix[u, v])
+            leg_t = float(t_matrix[u, v])
+            leg_vg = float(vg_matrix[u, v])
+            leg_d = float(dist_matrix[u, v])
+
+            cum_energy += leg_e
+            cum_time += leg_t
+
+            legs.append({
+                "leg_index": idx + 1,
+                "from_id": waypoints[u].id,
+                "from_label": waypoints[u].label,
+                "to_id": waypoints[v].id,
+                "to_label": waypoints[v].label,
+                "distance_m": leg_d,
+                "ground_speed_mps": leg_vg,
+                "duration_s": leg_t,
+                "energy_joules": leg_e,
+                "energy_wh": leg_e / 3600.0,
+                "cumulative_energy_wh": cum_energy / 3600.0,
+                "remaining_soc_pct": self.drone_model.state_of_charge_percent(cum_energy),
+            })
+
+        total_wh = cum_energy / 3600.0
+        is_feasible = self.drone_model.is_mission_feasible(cum_energy)
+        soc_pct = self.drone_model.state_of_charge_percent(cum_energy)
+
+        return OptimizationResult(
+            algorithm_name="Traditional Distance-First (Wind-Blind)",
+            optimal_path=path,
+            total_energy_joules=float(cum_energy),
+            total_energy_wh=float(total_wh),
+            total_flight_time_s=float(cum_time),
+            execution_time_s=exec_time,
+            is_feasible=is_feasible,
+            remaining_soc_percent=float(soc_pct),
+            num_evaluations=eval_count,
+            leg_details=legs,
+        )
+

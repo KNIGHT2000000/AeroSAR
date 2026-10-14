@@ -7,7 +7,11 @@ and MAVLink mission generation.
 
 from .physics import DronePhysicsModel, Waypoint, WindField
 from .cost_matrix import CostMatrixCalculator, CostMatrixResult
-from .brute_force import BruteForceSolver, GreedyNearestNeighborSolver
+from .brute_force import (
+    BruteForceSolver,
+    GreedyNearestNeighborSolver,
+    EuclideanNearestNeighborSolver,
+)
 from .bitmask_dp import BitmaskDPSolver, OptimizationResult
 from .telemetry import MAVLinkMissionGenerator
 
@@ -19,6 +23,7 @@ __all__ = [
     "CostMatrixResult",
     "BruteForceSolver",
     "GreedyNearestNeighborSolver",
+    "EuclideanNearestNeighborSolver",
     "BitmaskDPSolver",
     "OptimizationResult",
     "MAVLinkMissionGenerator",
