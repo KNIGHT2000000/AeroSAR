@@ -185,12 +185,11 @@ class MissionPlotter:
             priorities = [wp.priority for wp in survivor_wps]
 
             norm = Normalize(vmin=1.0, vmax=10.0)
-            cmap = cm.get_cmap("YlOrRd")
             scatter = ax.scatter(
                 surv_xs,
                 surv_ys,
                 c=priorities,
-                cmap=cmap,
+                cmap="YlOrRd",
                 norm=norm,
                 s=240,
                 edgecolors="#FFFFFF",
